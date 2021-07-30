@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>APP JS</title>
+</head>
+<body>
+    <img src="https://www.maquinasvirtuales.eu/ipsoapoo/2020/01/crear-containers-docker-sobre-kubernetes-1.png">
+    <div id="id01"></div>
+
+<script>
+var xmlhttp = new XMLHttpRequest();
+var url = "http://10.109.226.206/";
+
+xmlhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+        var myArr = JSON.parse(this.responseText);
+        document.getElementById("id01").innerHTML = "<h2>La hora es " + resp.time + "</h2><br><h2>El hostname es " + resp.hostname + "</h2>";
+    }
+};
+xmlhttp.open("GET", url, true);
+xmlhttp.send();
+
+</script>
+</body>
+</html>

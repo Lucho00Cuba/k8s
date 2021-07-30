@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: rs-firts
+  labels:
+    app: rs-firts
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: pod-label
+  template:
+    metadata:
+      labels:
+        app: pod-label
+    spec:
+      containers:
+        - name: cont-1
+          image: nginx:alpine

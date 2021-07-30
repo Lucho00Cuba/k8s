@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: envar-demo
+spec:
+  containers:
+  - name: envar-demo-container
+    image: gcr.io/google-samples/node-hello:1.0
+    env:
+    - name: VAR-1
+      value: "Variable 1"
+    - name: VAR-2
+      value: "Variable 2"
+    - name: VAR-3
+      value: "Variable 3"
