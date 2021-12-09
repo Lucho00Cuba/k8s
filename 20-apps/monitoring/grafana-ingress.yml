@@ -1,0 +1,41 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  entryPoints:
+    - websecure
+  routes:
+  - match: Host(`grafana.k8s.lab`)
+    kind: Rule
+    services:
+    - kind: Service
+      name: grafana
+      namespace: monitoring
+      port: 3000
+  tls:
+    secretName: grafana.k8s.lab
+  tls:
+    secretName: grafana.k8s.lab
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-grafana
+  namespace: monitoring
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: grafana.k8s.lab
+  namespace: monitoring
+spec:
+  dnsNames:
+    - grafana.k8s.lab
+  secretName: grafana.k8s.lab
+  issuerRef:
+    name: selfsigned-grafana
+    kind: ClusterIssuer

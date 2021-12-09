@@ -1,0 +1,52 @@
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: gitlab-external  
+spec:
+  type: ExternalName
+  ports:
+  - name: http    
+    port: 80   
+  externalName: 192.168.0.200
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitlab-external
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+  - kind: Rule
+    match: Host(`gitlab.k8s.lab`)
+    services:
+    - kind: Service
+      name: gitlab-external
+      namespace: default
+      port: 80
+  tls:
+    secretName: gitlab.k8s.lab
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-gitlab
+  namespace: default
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitlab.k8s.lab
+  namespace: default
+spec:
+  dnsNames:
+    - gitlab.k8s.lab
+  secretName: gitlab.k8s.lab
+  issuerRef:
+    name: selfsigned-gitlab
+    kind: ClusterIssuer
+---

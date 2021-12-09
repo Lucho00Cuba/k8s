@@ -1,0 +1,260 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: traefik
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: traefik
+  namespace: traefik
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: traefik
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: traefik
+  namespace: traefik
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: traefik
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - services
+      - endpoints
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - extensions
+      - networking.k8s.io
+    resources:
+      - ingresses
+      - ingressclasses
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - extensions
+      - networking.k8s.io
+    resources:
+      - ingresses/status
+    verbs:
+      - update
+  - apiGroups:
+      - traefik.containo.us
+    resources:
+      - ingressroutes
+      - ingressroutetcps
+      - ingressrouteudps
+      - middlewares
+      - middlewaretcps
+      - tlsoptions
+      - tlsstores
+      - traefikservices
+      - serverstransports
+    verbs:
+      - get
+      - list
+      - watch
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: traefik
+  namespace: traefik
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: traefik
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: traefik
+subjects:
+  - kind: ServiceAccount
+    name: traefik
+    namespace: traefik
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik
+  namespace: traefik
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: traefik
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+      app.kubernetes.io/instance: traefik
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "9100"
+      labels:
+        app.kubernetes.io/name: traefik
+        app.kubernetes.io/instance: traefik
+    spec:
+      serviceAccountName: traefik
+      terminationGracePeriodSeconds: 60
+      hostNetwork: false
+      containers:
+      - image: "traefik:v2.2"
+        imagePullPolicy: IfNotPresent
+        name: traefik
+        resources:
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 8081
+          failureThreshold: 1
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 8081
+          failureThreshold: 3
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 2
+        ports:
+        - name: "metrics"
+          containerPort: 9100
+          protocol: "TCP"
+        - name: "traefik"
+          containerPort: 8081
+          protocol: "TCP"
+        - name: "web"
+          containerPort: 8080
+          protocol: "TCP"
+        - name: "websecure"
+          containerPort: 8443
+          protocol: "TCP"
+        securityContext:
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsGroup: 65532
+          runAsNonRoot: true
+          runAsUser: 65532
+        volumeMounts:
+          - name: data
+            mountPath: /data
+          - name: tmp
+            mountPath: /tmp
+        args:
+          - "--log.level=DEBUG"
+          - "--entryPoints.metrics.address=:9100/tcp"
+          - "--entryPoints.traefik.address=:8081/tcp"
+          - "--entryPoints.web.address=:8080/tcp"
+          - "--entryPoints.websecure.address=:8443/tcp"
+          - "--api.dashboard=true"
+          - "--api.insecure=false"
+          - "--ping=true"
+          - "--metrics.prometheus=true"
+          - "--metrics.prometheus.entrypoint=metrics"
+          - "--providers.kubernetescrd"
+          - "--providers.kubernetesingress"
+          - "--entryPoints.web.http.redirections.entryPoint.to=websecure"
+          - "--entryPoints.web.http.redirections.entryPoint.scheme=https"
+          - "--serversTransport.insecureSkipVerify=true"
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      securityContext:
+        fsGroup: 65532
+---
+apiVersion: v1
+kind: List
+metadata:
+  name: traefik
+  namespace: traefik
+items:
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: traefik
+      namespace: traefik
+      labels:
+        app.kubernetes.io/name: traefik
+        app.kubernetes.io/instance: traefik
+      annotations:
+    spec:
+      type: LoadBalancer
+      selector:
+        app.kubernetes.io/name: traefik
+        app.kubernetes.io/instance: traefik
+      ports:
+      - port: 80
+        name: web
+        targetPort: "web"
+        protocol: "TCP"
+      - port: 443
+        name: websecure
+        targetPort: "websecure"
+        protocol: "TCP"
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: traefik-dashboard
+  namespace: traefik
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: traefik
+spec:
+  entryPoints:
+    - websecure
+  routes:
+  - match: Host(`traefik.k8s.lab`)
+    kind: Rule
+    services:
+    - name: api@internal
+      kind: TraefikService
+  tls:
+    secretName: traefik.k8s.lab
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-traefik
+  namespace: traefik
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: traefik.k8s.lab
+  namespace: traefik
+spec:
+  dnsNames:
+    - traefik.k8s.lab
+  secretName: traefik.k8s.lab
+  issuerRef:
+    name: selfsigned-traefik
+    kind: ClusterIssuer

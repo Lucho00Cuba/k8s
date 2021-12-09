@@ -1,0 +1,144 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-pass
+type: Opaque
+stringData:
+  password: "root"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress
+  labels:
+    app: wordpress
+spec:
+  type: NodePort # Service (ClusterIP,NodePort,LoadBalancer)
+  ports:
+    - port: 80
+      targetPort: 80
+  selector:
+    app: wordpress
+    tier: frontend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wordpress
+  labels:
+    app: wordpress
+spec:
+  selector:
+    matchLabels:
+      app: wordpress
+      tier: frontend
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: wordpress
+        tier: frontend
+    spec:
+      containers:
+      - image: wordpress:4.8-apache
+        name: wordpress
+        env:
+        - name: WORDPRESS_DB_HOST
+          value: wordpress-mysql
+        - name: WORDPRESS_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-pass
+              key: password
+        ports:
+        - containerPort: 80
+          name: wordpress
+---
+# MYSQL
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress-mysql
+  labels:
+    app: wordpress
+spec:
+  ports:
+    - port: 3306
+  selector:
+    app: wordpress
+    tier: mysql
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wordpress-mysql
+  labels:
+    app: wordpress
+spec:
+  selector:
+    matchLabels:
+      app: wordpress
+      tier: mysql
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: wordpress
+        tier: mysql
+    spec:
+      containers:
+      - image: mysql:5.7
+        name: mysql
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-pass
+              key: password
+        ports:
+        - containerPort: 3306
+          name: mysql
+---
+#### INGRESS
+#apiVersion: traefik.containo.us/v1alpha1
+#kind: IngressRoute
+#metadata:
+#  name: wordpress
+#  namespace: default
+#spec:
+#  entryPoints:
+#    - websecure
+#  routes:
+#  - kind: Rule
+#    match: Host(`wordpress.k8s.lab`)
+#    services:
+#    - kind: Service
+#      name: wordpress
+#      namespace: default
+#      port: 80
+#  tls:
+#    secretName: wordpress.k8s.lab
+#---
+#apiVersion: cert-manager.io/v1
+#kind: ClusterIssuer
+#metadata:
+#  name: selfsigned-wordpress
+#  namespace: default
+#spec:
+#  selfSigned: {}
+#---
+#apiVersion: cert-manager.io/v1
+#kind: Certificate
+#metadata:
+#  name: wordpress.k8s.lab
+#  namespace: default
+#spec:
+#  dnsNames:
+#    - wordpress.k8s.lab
+#  secretName: wordpress.k8s.lab
+#  issuerRef:
+#    name: selfsigned-wordpress
+#    kind: ClusterIssuer
