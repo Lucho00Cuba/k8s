@@ -1,0 +1,441 @@
+# hello-kubernetes.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-kubernetes
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: hello-kubernetes
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-kubernetes
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: hello-kubernetes
+  template:
+    metadata:
+      labels:
+        app: hello-kubernetes
+    spec:
+      containers:
+      - name: hello-kubernetes
+        image: paulbouwer/hello-kubernetes:1.8
+        ports:
+        - containerPort: 8080
+###
+###
+# Fluentd
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-logging
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluentd
+  namespace: kube-logging
+  labels:
+    app: fluentd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluentd
+  labels:
+    app: fluentd
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: fluentd
+roleRef:
+  kind: ClusterRole
+  name: fluentd
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: fluentd
+  namespace: kube-logging
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd
+  namespace: kube-logging
+  labels:
+    app: fluentd
+    version: v1
+    kubernetes.io/cluster-service: "true"
+spec:
+  selector:
+    matchLabels:
+      app: fluentd
+      version: v1
+      kubernetes.io/cluster-service: "true"
+  template:
+    metadata:
+      labels:
+        app: fluentd
+        version: v1
+        kubernetes.io/cluster-service: "true"
+    spec:
+      serviceAccount: fluentd
+      serviceAccountName: fluentd
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+      containers:
+      - name: fluentd
+        image: fluent/fluentd-kubernetes-daemonset:v1.4-debian-forward-1
+        command:
+          - /bin/sh
+          - '-c'
+          - >
+            fluent-gem i fluent-plugin-grafana-loki-licence-fix ;
+            fluent-gem i fluent-plugin-parser-json --no-document ;
+            tini /fluentd/entrypoint.sh;
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 200Mi
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        - name: config
+          mountPath: /fluentd/etc
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: config
+        configMap:
+          name: fluentd-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-config
+  namespace: kube-logging
+  labels:
+    app: fluentd
+data:
+  fluent.conf: |
+    <source>
+      @type tail
+      path /var/log/*.log
+      pos_file /var/log/fluentd/tmp/access.log.pos
+      tag foo.*
+
+      <parse>
+        @type json
+      </parse>
+    </source>
+
+    <source>
+      @type tail
+      @id in_tail_container_logs
+      path /var/log/containers/*.log
+      exclude_path ["/var/log/containers/fluentd*"]
+      pos_file /var/log/fluentd-containers.log.pos
+      tag kubernetes.*
+      read_from_head true
+
+      # ATTENTION: THE FOLLOWING DEPENDS ON THE KUBERNETES VERSION
+      # https://github.com/fluent/fluent-plugin-parser-cri#log-and-configuration-example
+
+      # <parse>
+      #   @type cri
+      #   merge_cri_fields false
+      #   <parse>
+      #     @type json
+      #     time_key time
+      #     time_format %Y-%m-%dT%H:%M:%S.%L%z
+      #   </parse>
+      # </parse>
+
+      <parse>
+        @type json
+        time_format %Y-%m-%dT%H:%M:%S.%L%z
+      </parse>
+
+    </source>
+
+    <match fluentd.**>
+      @type null
+    </match>
+
+    <match kubernetes.var.log.containers.**fluentd**.log>
+      @type null
+    </match>
+
+    <filter kubernetes.**>
+      @type kubernetes_metadata
+      @id filter_kube_metadata
+    </filter>
+
+    <filter kubernetes.var.log.containers.**>
+      @type record_transformer
+      enable_ruby
+      remove_keys kubernetes, docker
+
+      <record>
+        app ${ record.dig("kubernetes", "labels", "app") }
+        job ${ record.dig("kubernetes", "labels", "app") }
+        namespace ${ record.dig("kubernetes", "namespace_name") }
+        pod ${ record.dig("kubernetes", "pod_name") }
+        container ${ record.dig("kubernetes", "container_name") }
+      </record>
+    </filter>
+
+    <match kubernetes.var.log.containers.**>
+      @type copy
+
+      <store>
+        @type loki
+        url "http://loki-service.kube-logging.svc.cluster.local:3100"
+        # extra_labels {"env":"dev"}
+        label_keys "app,job,namespace,pod,container"
+        flush_interval 10s
+        flush_at_shutdown true
+        buffer_chunk_limit 1m
+      </store>
+
+      <store>
+        @type stdout
+      </store>
+    </match>
+###
+###
+## Loki 
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-local-config-yaml
+  namespace: kube-logging
+data:
+  local-config.yaml: |
+    auth_enabled: false
+
+    server:
+      http_listen_port: 3100
+
+    ingester:
+      lifecycler:
+        address: 127.0.0.1
+        ring:
+          kvstore:
+            store: inmemory
+          replication_factor: 1
+        final_sleep: 0s
+      chunk_idle_period: 5m
+      chunk_retain_period: 30s
+
+    schema_config:
+      configs:
+      - from: 2020-05-15
+        store: boltdb
+        object_store: filesystem
+        schema: v11
+        index:
+          prefix: index_
+          period: 168h
+
+    storage_config:
+      boltdb:
+        directory: /tmp/loki/index
+
+      filesystem:
+        directory: /tmp/loki/chunks
+
+    limits_config:
+      enforce_metric_name: false
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+        kind: Namespace
+#---
+#apiVersion: v1
+#kind: Namespace
+#metadata:
+#  name: kube-logging
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: loki-secrets
+  namespace: kube-logging
+
+stringData:
+  # Application secrets
+  # APP_KEY: "base64:ZMhMvYF89tKl6nUMwVHo6CCsPNg676OJBA2TJ2Yz7TY="
+
+#data
+  #SOME_PASSWORD: "C5&hwg5cGQMMv@2Kicb$xRY@VYrgZXKTiw3izv%6dZ@5R*&cbUS%yvzEu*svfaY$"
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: loki-config
+  namespace: kube-logging
+data:
+  # Application data
+  # APP_NAME: "thesolicitor"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-service
+  namespace: kube-logging
+  labels:
+    app: loki
+spec:
+  # ClusterIP | LoadBalancer
+  type: ClusterIP
+  ports:
+    - name: loki
+      protocol: TCP
+      port: 3100
+      targetPort: 3100
+  selector:
+      app: loki
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki-deployment
+  namespace: kube-logging
+  labels:
+    app: loki
+spec:
+  selector:
+    matchLabels:
+      app: loki
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: loki
+    spec:
+      volumes:
+        - name: loki-config-yaml
+          configMap:
+            name: loki-config-yaml
+        - name: loki-data
+          persistentVolumeClaim:
+            claimName: loki-pv-claim
+      restartPolicy: Always
+      containers:
+
+      # Create a container with the Grafana Loki
+      - name: loki-container
+        image: grafana/loki:latest
+        imagePullPolicy: Always
+        args: ["-config.file=/etc/loki/local-config.yaml"]
+        stdin: true
+        tty: true
+        ports:
+          - containerPort: 3100
+        volumeMounts:
+        - name: loki-data
+          mountPath: /tmp/loki
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-pv-claim
+  namespace: kube-logging
+  labels:
+    app: loki
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
+###
+###
+# Grafana
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-service
+  namespace: default
+  labels:
+    app: grafana
+spec:
+  type: ClusterIP
+  ports:
+    - name: web
+      protocol: TCP
+      port: 80
+      targetPort: 3000
+  selector:
+      app: grafana
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana-deployment
+  namespace: default
+  labels:
+    app: grafana
+spec:
+  selector:
+    matchLabels:
+      app: grafana
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+      # Create a container with the RabbitMQ
+      - name: grafana-container
+        image: grafana/grafana:latest
+        imagePullPolicy: Always
+        stdin: true
+        tty: true
+        # env:
+        #   - name: grafana_DEFAULT_SERVER
+        #     valueFrom:
+        #       configMapKeyRef:
+        #         name: grafana-config
+        #         key: grafana_DEFAULT_SERVER
+        #   - name: APP_KEY
+        #     valueFrom:
+        #       secretKeyRef:
+        #         name: queue2db-secrets
+        #         key: APP_KEY
+---
