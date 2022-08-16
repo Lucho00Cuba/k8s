@@ -38,7 +38,7 @@ spec:
     spec:
       containers:
       - name: elasticsearch
-        image: docker.elastic.co/elasticsearch/elasticsearch:7.2.0
+        image: docker.elastic.co/elasticsearch/elasticsearch:7.13.0
         resources:
             limits:
               cpu: 1000m
@@ -130,7 +130,7 @@ spec:
     spec:
       containers:
       - name: kibana
-        image: docker.elastic.co/kibana/kibana:7.2.0
+        image: docker.elastic.co/kibana/kibana:7.13.0
         resources:
           limits:
             cpu: 1000m
@@ -154,8 +154,6 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: fluentd
-  labels:
-    app: fluentd
 rules:
 - apiGroups:
   - ""
@@ -166,6 +164,7 @@ rules:
   - get
   - list
   - watch
+
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
@@ -186,24 +185,29 @@ metadata:
   name: fluentd
   namespace: kube-logging
   labels:
-    app: fluentd
+    k8s-app: fluentd
+    version: v1
 spec:
   selector:
     matchLabels:
-      app: fluentd
+      k8s-app: fluentd
+      version: v1
   template:
     metadata:
       labels:
-        app: fluentd
+        k8s-app: fluentd
+        version: v1
     spec:
       serviceAccount: fluentd
       serviceAccountName: fluentd
       tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        effect: NoSchedule
       - key: node-role.kubernetes.io/master
         effect: NoSchedule
       containers:
       - name: fluentd
-        image: fluent/fluentd-kubernetes-daemonset:v1.4.2-debian-elasticsearch-1.1
+        image: fluent/fluentd-kubernetes-daemonset:v1-debian-elasticsearch
         env:
           - name:  FLUENT_ELASTICSEARCH_HOST
             value: "elasticsearch.kube-logging.svc.cluster.local"
@@ -212,27 +216,55 @@ spec:
           - name: FLUENT_ELASTICSEARCH_SCHEME
             value: "http"
           - name: FLUENTD_SYSTEMD_CONF
-            value: disable
+            value: 'disable'
+          - name: FLUENT_CONTAINER_TAIL_EXCLUDE_PATH
+            value: /var/log/containers/fluent*
+          - name: FLUENT_CONTAINER_TAIL_PARSER_TYPE
+            value: /^(?<time>.+) (?<stream>stdout|stderr)( (?<logtag>.))? (?<log>.*)$/
+          # Option to configure elasticsearch plugin with self signed certs
+          # ================================================================
+          #- name: FLUENT_ELASTICSEARCH_SSL_VERIFY
+          #  value: "true"
+          # Option to configure elasticsearch plugin with tls
+          # ================================================================
+          #- name: FLUENT_ELASTICSEARCH_SSL_VERSION
+          #  value: "TLSv1_2"
+          # X-Pack Authentication
+          # =====================
+          #- name: FLUENT_ELASTICSEARCH_USER
+          #  value: "elastic"
+          #- name: FLUENT_ELASTICSEARCH_PASSWORD
+          #  value: "changeme"
         resources:
           limits:
-            memory: 512Mi
+            memory: 200Mi
           requests:
             cpu: 100m
             memory: 200Mi
         volumeMounts:
         - name: varlog
           mountPath: /var/log
-        - name: varlibdockercontainers
-          mountPath: /var/lib/docker/containers
+        # When actual pod logs in /var/lib/docker/containers, the following lines should be used.
+        # - name: dockercontainerlogdirectory
+        #   mountPath: /var/lib/docker/containers
+        #   readOnly: true
+        # When actual pod logs in /var/log/pods, the following lines should be used.
+        - name: dockercontainerlogdirectory
+          mountPath: /var/log/pods
           readOnly: true
       terminationGracePeriodSeconds: 30
       volumes:
       - name: varlog
         hostPath:
           path: /var/log
-      - name: varlibdockercontainers
+      # When actual pod logs in /var/lib/docker/containers, the following lines should be used.
+      # - name: dockercontainerlogdirectory
+      #   hostPath:
+      #     path: /var/lib/docker/containers
+      # When actual pod logs in /var/log/pods, the following lines should be used.
+      - name: dockercontainerlogdirectory
         hostPath:
-          path: /var/lib/docker/containers
+          path: /var/log/pods
 ---
 apiVersion: v1
 kind: Pod
